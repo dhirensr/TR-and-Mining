@@ -75,6 +75,11 @@
   {:document-count 1
    :document-frequencies (document-frequencies document)})
 
+(defn document->pl2-model [document]
+  {:document-count 1
+   :document-frequencies (document-frequencies document)
+   :total-document-term-count (count (document-frequencies document))})
+
 (defn document->bm25-model [document]
   {:document-count 1
    :total-document-term-count (document-term-count document)})
@@ -92,8 +97,14 @@
 (defn average-document-term-count [bm25-model]
   (/ (:total-document-term-count bm25-model) (:document-count bm25-model)))
 
+(defn average-document-count [pl2-model]
+  (/ (count (:document-frequencies pl2-model)) (:document-count pl2-model)))
+
 (defn make-model [combiner mapper documents]
   (reduce combiner (map mapper documents)))
+
+(defn pl2-model [documents]
+  (make-model combine-idf-models document->idf-model documents))
 
 (defn idf-model [documents]
   (make-model combine-idf-models document->idf-model documents))
@@ -111,6 +122,16 @@
                                   (* b (/ document-term-count
                                           average-document-term-count))))))]))
 
+(defn pl2-score
+  [term-frequency document-term-count average-document-term-count c lambda]
+  (let [[term frequency] term-frequency
+        tfn (* frequency (log2 (+ 1 (* c
+                                       (/ average-document-term-count document-term-count)))))]
+    [term (* (/ 1 (+ tfn 1))
+             (+ (* tfn (log2 (/ tfn lambda)))
+                (*  (- (+ lambda (/ 1 (* 12 tfn ))) tfn) (log2 2.71828))
+                (* 0.5 (log2 (* 2 3.142 tfn)))))]))
+
 (defn bm25-scores [bm25-model term-frequencies]
   (let [k 1.25
         b 0.75
@@ -123,6 +144,22 @@
     (sort score-comparator
           (map (fn [[term score]]
                  [term (/ score total-bm25-score)])
+               term-scores))))
+
+
+(defn pl2-scores [pl2-model term-frequencies]
+  (let [lambda 0.1
+        c 7.0
+        document-term-count (count term-frequencies)
+        average-document-term-count (average-document-count pl2-model)
+        term-scores
+        (map #(pl2-score % document-term-count average-document-term-count c lambda)
+             term-frequencies)
+        total-pl2-score (reduce + (map second term-scores))]
+    (sort score-comparator
+          (map (fn [[term score]]
+                 [term (/ score total-pl2-score
+                          )])
                term-scores))))
 
 (defn inverse-document-frequency [document-count document-frequency]
@@ -148,8 +185,6 @@
   (let [bm25-scores* (into {} (bm25-scores bm25-model term-frequencies))
         idf-scores* (into {} (idf-scores idf-model term-frequencies))]
     (sort score-comparator (vec (merge-with * bm25-scores* idf-scores*)))))
-
-
 
 (defn term-frequency [document term]
   (get (term-frequencies document) term))
@@ -219,6 +254,7 @@
 
 (def bm25-model* (bm25-model (corpus "resources/doc.txt")))
 (def idf-model* (idf-model (corpus "resources/doc.txt")))
+(def pl2-model* (pl2-model (corpus "resources/doc.txt")))
 
 
 (comment
@@ -241,6 +277,13 @@
    (mutual-information (get corpus 5) "on" "why"))
 
   (pprint
-   (->> corpus
+   (->> (corpus "resources/doc.txt")
         (map term-frequencies)
-        (map (partial idf-weighted-bm25-scores bm25-model* idf-model*)))))
+        (map (partial idf-weighted-bm25-scores bm25-model* idf-model*))
+        flatten))
+  (pprint
+   (pl2-scores
+    (pl2-model (corpus "resources/doc.txt"))
+    (into (sorted-map)
+          (map term-frequencies
+               (pl2-model (corpus "resources/doc.txt")))))))
